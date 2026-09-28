@@ -127,3 +127,39 @@ runs:
         echo "$dir/bin" >> "$GITHUB_PATH"
         echo "dir=$dir" >> "$GITHUB_OUTPUT"
         echo "工具链就绪: $dir"
+
+    # 快照里的 as/ld（以及 gcc 真身）是在构建机上运行的 host 程序，会依赖构建机的系统库：
+    # libsframe.so.1 / libbfd-2.42-system.so / libctf.so.0 —— 这些只有 Ubuntu 24.04+ 自带。
+    # 在 22.04 上它们缺失，报出来的是 CMake TestCCompiler 的天书，很难定位，所以这里先预检。
+    - name: 预检工具链可执行性
+      shell: bash
+      env:
+        TRIPLET: ${{ inputs.triplet }}
+      run: |
+        set -euo pipefail
+        bin="${AML_TOOLCHAIN_DIR}/bin/${TRIPLET}"
+        # as/ld 需要快照内的 host 侧 libbfd-2.41.so；不依赖前一步是否已导出，这里自带
+        export LD_LIBRARY_PATH="${AML_TOOLCHAIN_DIR}/x86_64-linux-gnu/${TRIPLET}/lib:${LD_LIBRARY_PATH:-}"
+        bad=''
+        for tool in as ld; do
+          "${bin}-${tool}" --version >/dev/null 2>&1 || bad="${bad} ${tool}"
+        done
+        gcc_bin="$(ls "${bin}-gcc-"* 2>/dev/null | head -1)"
+        if [ -n "$gcc_bin" ]; then
+          "$gcc_bin" --version >/dev/null 2>&1 || bad="${bad} gcc"
+        fi
+        if [ -n "$bad" ]; then
+          echo "::error::工具链的 host 侧程序无法启动（${bad# }）。镜像 $(. /etc/os-release && echo "${PRETTY_NAME}") 缺少它们依赖的系统库。"
+          echo "  → 请把 workflow 的 runner 设为 ubuntu-24.04（或更新）：受影响的库是 libsframe.so.1 / libbfd-2.42-system.so / libctf.so.0，Ubuntu 24.04 才自带。"
+          for tool in as ld; do
+            "${bin}-${tool}" --version 2>&1 | head -2 | sed 's/^/     /' || true
+          done
+          echo "  → ldd 报告缺失："
+          for tool in as ld; do
+            ldd "${bin}-${tool}" 2>&1 | grep -i 'not found' | sed 's/^/     /' || true
+          done
+          exit 1
+        fi
+        echo "预检通过: $("${bin}-as" --version | head -1)"
+        [ -n "$gcc_bin" ] && echo "          $("$gcc_bin" --version | head -1)"
+        true

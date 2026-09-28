@@ -10,6 +10,7 @@
 | --- | --- | --- |
 | `bin/<triplet>-gcc` 是 ccache 包装脚本，写死容器内绝对路径 | `ccache: not found` | `env.sh` / `toolchain.cmake` 自动改用真实的 `-gcc-<ver>` 二进制 |
 | `as` / `ld` 需要 host 侧 `libbfd-2.41.so` | `error while loading shared libraries: libbfd-2.41.so` | 自动设置 `LD_LIBRARY_PATH=<toolchain>/x86_64-linux-gnu/<triplet>/lib` |
+| `as` / `ld` 还依赖**构建机系统库**：`libsframe.so.1` / `libbfd-2.42-system.so` / `libctf.so.0` | Ubuntu 22.04 runner 上 `as ... cannot open shared object file`，报在 CMake 编译器测试里很难定位 | **runner 用 `ubuntu-24.04`**（24.04 才自带这些库）；setup action 增加预检步骤提前报错 |
 | sysroot 内有数百个指向 `/home/docker/...` 的绝对符号链接 | `libm.so.6, needed by libstdc++.so, not found`、`cannot find -lglib-2.0` | `scripts/relativize-symlinks.py` 改写成相对链接，整棵树可搬迁 |
 | 链接期不解析 sysroot 内的 `DT_NEEDED` | 同上（`-lm` 之类解析不到） | 加 `-Wl,-rpath-link,<sysroot>/usr/lib` |
 | 全量工具链 3.6 GB | 不适合当 CI 依赖 | 裁剪到只留两个项目所需，实测 **895 MB / tar.zst 223 MB** |
@@ -22,6 +23,7 @@ toolchain.cmake                     通用 CMake 工具链文件
 scripts/make-snapshot.sh            生成可搬迁快照（裁剪 + 修链接 + 打包 + 自检）
 scripts/relativize-symlinks.py      绝对符号链接 → 相对链接
 scripts/verify-snapshot.sh          用快照真编译两个项目，验证快照可用
+tests/cleanroom-toolchain-test.sh 干净容器验证：这个快照能在哪个 runner 镜像上跑
 tests/                              假工具链 fixture + 链接修复的单元测试
 .github/actions/setup-aml-toolchain 复合 action：下载/缓存快照并导出环境
 .github/workflows/build-project.yml 可复用 workflow：编译一个项目
@@ -66,6 +68,25 @@ gh release create toolchain-2026.09 snapshots/*.tar.zst snapshots/SHA256SUMS sna
 > 其余部分为 gcc/binutils/glibc 与 CoreELEC 开源库。若要把快照放公开 release，属于再分发行为，
 > 由仓库所有者判断；若不想公开发，可改发到私有 release 并传 `toolchain-url` + `toolchain-token`，
 > 或参考上文拆包思路（公开 base + 私有 vendor）。
+
+### 运行环境要求
+
+| 项 | 要求 | 原因 |
+| --- | --- | --- |
+| runner 镜像 | **ubuntu-24.04 或更新** | 快照里的 `as`/`ld` 是 host 侧程序，依赖系统库 `libsframe.so.1` / `libbfd-2.42-system.so` / `libctf.so.0`，只有 24.04+ 自带（22.04 是 binutils 2.38） |
+| 磁盘 | 解压后约 900 MB | 快照解压体积 |
+| 网络 | 能访问本仓库 release | 首次拉快照（之后按 sha256 命中 cache） |
+
+想确认某个镜像行不行，不用跑完整构建，用干净容器测试即可：
+
+```bash
+# 解一份快照出来，然后在只装了 build-essential 的容器里真编译 C/C++
+zstd -d -c snapshots/aml-toolchain-*.tar.zst | tar -xf - -C /tmp/tc
+tests/cleanroom-toolchain-test.sh /tmp/tc ubuntu:24.04 ubuntu:22.04
+```
+
+实测结果：`ubuntu:24.04` 全部通过；`ubuntu:22.04` 在第一步 `as --version` 就失败。
+`snapshot.yml` 已把这一步接成发布前的固定关卡（runner 上有 docker 时生效）。
 
 ### 3. 编译两个项目
 

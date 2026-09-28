@@ -29,9 +29,9 @@ on:
         type: string
         default: main
       runner:
-        description: runner 标签
+        description: 'runner 标签。必须是 ubuntu-24.04 或更新的镜像：快照里 as/ld 是 host 侧程序，依赖 24.04 才有的 libsframe.so.1 / libbfd-2.42-system.so'
         type: string
-        default: ubuntu-22.04
+        default: ubuntu-24.04
       build-type:
         description: CMAKE_BUILD_TYPE
         type: string

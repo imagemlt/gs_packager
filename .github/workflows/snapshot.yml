@@ -6,10 +6,9 @@ name: snapshot
 # 容器里跑的话挂载到 /home/docker/CoreELEC 最省事：
 #   docker run --rm -v "$PWD:/home/docker/CoreELEC" -w /home/docker/CoreELEC <image> ...
 #
-# ⚠️ 快照里含 libGLESv2 / libEGL / libamcodec 等 Amlogic 专有二进制。
-#    如果本仓库是公开仓库，不要把 asset 发到公开 release：请改用私有 release/私有 registry，
-#    或只跑本 workflow 的 artifact 上传（artifact 仅仓库成员可下载）。
-#    只有你明确提供 release-tag 时才会发布。
+# 说明：快照里含 libGLESv2 / libEGL / libamcodec 三个 Amlogic 供应商二进制（共约 68 MB），
+# 其余全部是 gcc/binutils/glibc/GStreamer 等开源件；不含任何项目源码或用户配置。
+# 只有你明确提供 release-tag 时才会发布；不填则只上传 artifact（仓库成员可下载）。
 
 on:
   workflow_dispatch:
@@ -30,6 +29,10 @@ on:
         description: 出包后真编译两个项目做验证
         type: boolean
         default: true
+      cleanroom-images:
+        description: 干净容器验证用的镜像（空格分隔；需 runner 上有 docker）
+        type: string
+        default: ubuntu:24.04
       release-tag:
         description: 发布用的 tag（留空则只上传 artifact，不发布）
         type: string
@@ -88,6 +91,26 @@ jobs:
           set -euo pipefail
           snapshot="$(ls snapshots/aml-toolchain-*.tar.zst | head -1)"
           scripts/verify-snapshot.sh --snapshot "${snapshot}" --projects-dir "${PWD}/projects"
+
+      # 这一步是"本地能编、换环境就挂"的体检：快照里的 as/ld 是 host 程序，
+      # 会依赖构建机的系统库（libsframe.so.1 / libbfd-2.42-system.so 等）。
+      # 之前在本地生成快照时没发现，换到 22.04 runner 上就直接挂了，所以固定成一道关。
+      - name: 干净容器验证（该快照能在哪个镜像上跑）
+        shell: bash
+        env:
+          IMAGES: ${{ inputs.cleanroom-images }}
+        run: |
+          set -euo pipefail
+          if ! command -v docker >/dev/null 2>&1; then
+            echo "::warning::runner 上没有 docker，跳过干净容器验证。这一步专门用来发现 host 侧库缺失，建议在有 docker 的 runner 上跑。"
+            exit 0
+          fi
+          snapshot="$(ls snapshots/aml-toolchain-*.tar.zst | head -1)"
+          work="$(mktemp -d)"
+          zstd -d -c "${snapshot}" | tar -xf - -C "${work}"
+          # shellcheck disable=SC2086
+          tests/cleanroom-toolchain-test.sh "${work}" ${IMAGES}
+          rm -rf "${work}"
 
       - name: 上传 artifact
         uses: actions/upload-artifact@v4
