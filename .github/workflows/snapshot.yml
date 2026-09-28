@@ -1,0 +1,118 @@
+name: snapshot
+
+# 生成工具链快照，可选发布为 release asset（供 build workflow / 项目仓库下载）。
+#
+# 需要在**有 CoreELEC 工具链的机器**上运行（自托管 runner，或 CoreELEC 构建容器）。
+# 容器里跑的话挂载到 /home/docker/CoreELEC 最省事：
+#   docker run --rm -v "$PWD:/home/docker/CoreELEC" -w /home/docker/CoreELEC <image> ...
+#
+# ⚠️ 快照里含 libGLESv2 / libEGL / libamcodec 等 Amlogic 专有二进制。
+#    如果本仓库是公开仓库，不要把 asset 发到公开 release：请改用私有 release/私有 registry，
+#    或只跑本 workflow 的 artifact 上传（artifact 仅仓库成员可下载）。
+#    只有你明确提供 release-tag 时才会发布。
+
+on:
+  workflow_dispatch:
+    inputs:
+      toolchain-dir:
+        description: CoreELEC 工具链根目录
+        type: string
+        default: /home/docker/CoreELEC/build.CoreELEC-Amlogic-ng.arm-21/toolchain
+      runner:
+        description: runner 标签（有 CoreELEC 工具链的机器，用逗号分隔可多标签）
+        type: string
+        default: self-hosted
+      minimal:
+        description: 精简裁剪（去掉 gold/dwp/lto-dump/lto1）
+        type: boolean
+        default: true
+      verify:
+        description: 出包后真编译两个项目做验证
+        type: boolean
+        default: true
+      release-tag:
+        description: 发布用的 tag（留空则只上传 artifact，不发布）
+        type: string
+        default: ''
+      project-ref:
+        description: 验证用项目 ref
+        type: string
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  snapshot:
+    runs-on: ${{ inputs.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 确保 zstd 可用
+        shell: bash
+        run: command -v zstd >/dev/null 2>&1 || { sudo apt-get update -qq && sudo apt-get install -y -qq zstd; }
+
+      - name: 生成快照
+        shell: bash
+        env:
+          TOOLCHAIN_DIR_INPUT: ${{ inputs.toolchain-dir }}
+          MINIMAL: ${{ inputs.minimal }}
+        run: |
+          set -euo pipefail
+          args=(--toolchain-dir "${TOOLCHAIN_DIR_INPUT}" --out snapshots)
+          [ "${MINIMAL}" = "true" ] || args+=(--no-minimal)
+          scripts/make-snapshot.sh "${args[@]}"
+
+      - name: 取出两个项目源码（用于验证）
+        if: inputs.verify
+        uses: actions/checkout@v4
+        with:
+          repository: imagemlt/AMLgsMenu
+          ref: ${{ inputs.project-ref }}
+          path: projects/AMLgsMenu
+          submodules: recursive
+
+      - name: 取出 AMLDigitalFPV 源码（用于验证）
+        if: inputs.verify
+        uses: actions/checkout@v4
+        with:
+          repository: imagemlt/AMLDigitalFPV
+          ref: ${{ inputs.project-ref }}
+          path: projects/AMLDigitalFPV
+          submodules: recursive
+
+      - name: 用快照真编译两个项目
+        if: inputs.verify
+        shell: bash
+        run: |
+          set -euo pipefail
+          snapshot="$(ls snapshots/aml-toolchain-*.tar.zst | head -1)"
+          scripts/verify-snapshot.sh --snapshot "${snapshot}" --projects-dir "${PWD}/projects"
+
+      - name: 上传 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: aml-toolchain-snapshot
+          path: |
+            snapshots/*.tar.zst
+            snapshots/SHA256SUMS
+            snapshots/snapshot-info.txt
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: 发布到 release
+        if: inputs.release-tag != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.release-tag }}
+        run: |
+          set -euo pipefail
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            gh release upload "${TAG}" snapshots/*.tar.zst snapshots/SHA256SUMS snapshots/snapshot-info.txt --clobber
+          else
+            gh release create "${TAG}" \
+              --title "toolchain ${TAG}" \
+              --notes "CoreELEC 交叉工具链快照（$(cat snapshots/snapshot-info.txt | tr '\n' ' ')）" \
+              snapshots/*.tar.zst snapshots/SHA256SUMS snapshots/snapshot-info.txt
+          fi

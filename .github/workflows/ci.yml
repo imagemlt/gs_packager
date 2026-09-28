@@ -1,0 +1,120 @@
+name: ci
+
+# 本仓库自检：不需要 CoreELEC 工具链，用假工具链 fixture 验证脚本逻辑。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  selftest:
+    runs-on: ubuntu-22.04
+    env:
+      TRIPLET: armv8a-libreelec-linux-gnueabihf
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Python 单元测试（链接修复器）
+        run: python3 -m unittest discover -s tests -v
+
+      - name: shell 语法检查
+        run: |
+          set -euo pipefail
+          bash -n env.sh
+          for f in scripts/*.sh tests/*.sh; do
+            echo "检查 $f"
+            bash -n "$f"
+          done
+
+      - name: fixture 冒烟（假工具链跑通 make-snapshot.sh）
+        run: |
+          set -euo pipefail
+          tests/make-fixture-toolchain.sh "${RUNNER_TEMP}/fixture"
+          TOOLCHAIN_DIR="${RUNNER_TEMP}/fixture" scripts/make-snapshot.sh \
+            --out "${RUNNER_TEMP}/out" --compress gzip --skip-smoke
+
+          mkdir -p "${RUNNER_TEMP}/unpack"
+          tar -xzf "${RUNNER_TEMP}/out/aml-toolchain-${TRIPLET}.tar.gz" -C "${RUNNER_TEMP}/unpack"
+
+          SYS="${RUNNER_TEMP}/unpack/${TRIPLET}/sysroot/usr/lib"
+          link="$(readlink "${SYS}/libm.so")"
+          [ "${link}" = "libm.so.6" ] || { echo "::error::链接没被相对化: ${link}"; exit 1; }
+          [ -e "${SYS}/libm.so" ] || { echo "::error::链接仍然悬空"; exit 1; }
+
+          GCCDIR="${RUNNER_TEMP}/unpack/lib/gcc/${TRIPLET}/13.2.0"
+          [ ! -e "${GCCDIR}/lto1" ] || { echo "::error::lto1 未按预期精简"; exit 1; }
+          [ -e "${GCCDIR}/liblto_plugin.so" ] || { echo "::error::liblto_plugin.so 被误删（会导致所有链接失败）"; exit 1; }
+          [ ! -e "${RUNNER_TEMP}/unpack/bin/${TRIPLET}-ld.gold" ] || { echo "::error::ld.gold 未按预期精简"; exit 1; }
+
+          [ -f "${RUNNER_TEMP}/out/SHA256SUMS" ] || { echo "::error::缺少 SHA256SUMS"; exit 1; }
+          [ -f "${RUNNER_TEMP}/out/snapshot-info.txt" ] || { echo "::error::缺少 snapshot-info.txt"; exit 1; }
+          echo "fixture 冒烟通过"
+
+      - name: YAML 结构与语法检查
+        run: |
+          set -euo pipefail
+          python3 -m pip install --quiet --disable-pip-version-check pyyaml
+          python3 - <<'PY'
+          import glob, sys, yaml
+
+          failed = False
+          for path in sorted(glob.glob(".github/workflows/*.yml") + glob.glob(".github/actions/*/action.yml")):
+              with open(path, encoding="utf-8") as fh:
+                  try:
+                      data = yaml.safe_load(fh)
+                  except yaml.YAMLError as exc:
+                      print(f"::error file={path}::YAML 解析失败: {exc}")
+                      failed = True
+                      continue
+              if not isinstance(data, dict):
+                  print(f"::error file={path}::内容不是映射")
+                  failed = True
+                  continue
+              if "action.yml" in path:
+                  runs = data.get("runs") or {}
+                  if runs.get("using") != "composite":
+                      print(f"::error file={path}::runs.using 必须是 composite")
+                      failed = True
+              else:
+                  # workflow: 必须声明触发与 jobs；workflow_call 的 inputs 必须带 type
+                  # 注意：PyYAML 按 YAML 1.1 会把未加引号的 on 解析成布尔 True
+                  call = None
+                  for key in ("on", True):
+                      if key in data:
+                          call = data[key]
+                          break
+                  if call is None:
+                      print(f"::error file={path}::缺少 on")
+                      failed = True
+                  if not data.get("jobs"):
+                      print(f"::error file={path}::缺少 jobs")
+                      failed = True
+                  call = call or {}
+                  if isinstance(call, dict) and "workflow_call" in call:
+                      for name, spec in ((call["workflow_call"] or {}).get("inputs") or {}).items():
+                          if not isinstance(spec, dict) or "type" not in spec:
+                              print(f"::error file={path}::workflow_call input '{name}' 缺少 type")
+                              failed = True
+              print(f"OK {path}")
+          sys.exit(1 if failed else 0)
+          PY
+
+      - name: toolchain.cmake 能被 CMake 解析
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/cmake-parse
+          cat > /tmp/cmake-parse/CMakeLists.txt <<'EOF'
+          cmake_minimum_required(VERSION 3.16)
+          project(parse_check LANGUAGES NONE)
+          message(STATUS "toolchain file 解析成功")
+          EOF
+          printf '#!/bin/sh\nexit 0\n' > "${RUNNER_TEMP}/fake-gcc"
+          chmod +x "${RUNNER_TEMP}/fake-gcc"
+          mkdir -p "${RUNNER_TEMP}/empty-toolchain/bin"
+          cmake -S /tmp/cmake-parse -B /tmp/cmake-parse/build \
+            -DCMAKE_TOOLCHAIN_FILE="${GITHUB_WORKSPACE}/toolchain.cmake" \
+            -DAML_TOOLCHAIN_DIR="${RUNNER_TEMP}/empty-toolchain" \
+            -DCMAKE_C_COMPILER="${RUNNER_TEMP}/fake-gcc" \
+            -DCMAKE_CXX_COMPILER="${RUNNER_TEMP}/fake-gcc" 2>&1 | tail -5

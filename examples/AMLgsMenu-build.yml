@@ -1,0 +1,29 @@
+# 复制到 imagemlt/AMLgsMenu 的 .github/workflows/build.yml 即可。
+#
+# 前置条件：gs_packager 的 release 里已经有工具链快照
+# （先在 gs_packager 里跑一次 snapshot workflow）。
+#
+# 如果 gs_packager 是私有仓库，需要：
+#   secrets.INFRA_TOKEN —— 能读取 gs_packager 的 PAT（classic: repo 权限）
+#   并把它传给 infra-token / toolchain-token
+
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    uses: imagemlt/gs_packager/.github/workflows/build-project.yml@main
+    with:
+      repository: ${{ github.repository }}
+      project: AMLgsMenu
+      build-type: Release
+      upload-artifact: true
+    # secrets:
+    #   infra-token: ${{ secrets.INFRA_TOKEN }}
+    #   toolchain-token: ${{ secrets.INFRA_TOKEN }}
+    #   source-token: ${{ secrets.GITHUB_TOKEN }}

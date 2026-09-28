@@ -1,0 +1,39 @@
+name: build
+
+# 一键编译两个地面端项目，产物以 artifact 上传。
+#
+# 前置条件：工具链快照已经在 gs_packager 的 release 里（先跑一次 snapshot workflow）。
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 项目分支/tag/SHA（留空用默认分支）
+        type: string
+        default: ''
+      artifact-suffix:
+        description: artifact 名后缀（可选，例如 v1.2.3）
+        type: string
+        default: ''
+  # 需要时再打开：推到 main 自动编译
+  # push:
+  #   branches: [main]
+  # schedule:
+  #   - cron: '0 3 * * 1'   # 每周一 03:00 UTC
+
+jobs:
+  AMLgsMenu:
+    uses: ./.github/workflows/build-project.yml
+    with:
+      repository: imagemlt/AMLgsMenu
+      ref: ${{ inputs.ref }}
+      extra-cmake-args: ''
+      upload-artifact: true
+
+  AMLDigitalFPV:
+    uses: ./.github/workflows/build-project.yml
+    with:
+      repository: imagemlt/AMLDigitalFPV
+      ref: ${{ inputs.ref }}
+      extra-cmake-args: ''
+      upload-artifact: true

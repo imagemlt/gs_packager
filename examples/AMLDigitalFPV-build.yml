@@ -1,0 +1,25 @@
+# 复制到 imagemlt/AMLDigitalFPV 的 .github/workflows/build.yml 即可。
+#
+# 与 AMLgsMenu 的差别：不需要额外 CMake 参数（build-project.yml 会按项目名自动判断），
+# 依赖 GStreamer / libamcodec / opus / pulse，这些都在工具链快照的 sysroot 里。
+
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    uses: imagemlt/gs_packager/.github/workflows/build-project.yml@main
+    with:
+      repository: ${{ github.repository }}
+      project: AMLDigitalFPV
+      build-type: Release
+      upload-artifact: true
+    # secrets:
+    #   infra-token: ${{ secrets.INFRA_TOKEN }}
+    #   toolchain-token: ${{ secrets.INFRA_TOKEN }}
+    #   source-token: ${{ secrets.GITHUB_TOKEN }}

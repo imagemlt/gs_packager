@@ -1,0 +1,196 @@
+name: build-project
+
+# 可复用 workflow：取出某个地面端项目源码，用工具链快照交叉编译，产出 artifact。
+#
+# 仓库内调用:   uses: ./.github/workflows/build-project.yml
+# 项目仓库调用: uses: imagemlt/gs_packager/.github/workflows/build-project.yml@main
+
+on:
+  workflow_call:
+    inputs:
+      repository:
+        description: 源码仓库 owner/name
+        type: string
+        default: imagemlt/AMLgsMenu
+      ref:
+        description: 分支 / tag / SHA；留空用默认分支
+        type: string
+        default: ''
+      project:
+        description: 产物名；留空则取仓库名（AMLgsMenu / AMLDigitalFPV）
+        type: string
+        default: ''
+      infra-repository:
+        description: 存放本工具的仓库
+        type: string
+        default: imagemlt/gs_packager
+      infra-ref:
+        description: 本工具的 ref
+        type: string
+        default: main
+      runner:
+        description: runner 标签
+        type: string
+        default: ubuntu-22.04
+      build-type:
+        description: CMAKE_BUILD_TYPE
+        type: string
+        default: Release
+      strip:
+        description: 是否 strip 产物
+        type: boolean
+        default: false
+      extra-cmake-args:
+        description: 追加的 CMake 参数
+        type: string
+        default: ''
+      toolchain-url:
+        description: 工具链快照地址；留空用 gs_packager latest release
+        type: string
+        default: ''
+      toolchain-sha256:
+        description: 工具链快照 sha256；留空从 SHA256SUMS 读取
+        type: string
+        default: ''
+      toolchain-owner:
+        description: 快照仓库 owner；留空用当前仓库 owner
+        type: string
+        default: ''
+      upload-artifact:
+        description: 是否上传产物
+        type: boolean
+        default: true
+    secrets:
+      toolchain-token:
+        required: false
+      source-token:
+        required: false
+      infra-token:
+        required: false
+    outputs:
+      artifact-name:
+        description: 上传的 artifact 名
+        value: ${{ jobs.build.outputs.artifact-name }}
+      binary-name:
+        description: 产物文件名
+        value: ${{ jobs.build.outputs.binary-name }}
+
+jobs:
+  build:
+    runs-on: ${{ inputs.runner }}
+    outputs:
+      artifact-name: ${{ steps.meta.outputs.artifact-name }}
+      binary-name: ${{ steps.meta.outputs.name }}
+    steps:
+      - name: 取出 gs_packager（提供 toolchain.cmake 等基础设施）
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.infra-repository }}
+          ref: ${{ inputs.infra-ref }}
+          path: .gs_packager
+          token: ${{ secrets.infra-token || github.token }}
+
+      - name: 取出项目源码
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.repository }}
+          ref: ${{ inputs.ref }}
+          path: src
+          submodules: recursive
+          token: ${{ secrets.source-token || github.token }}
+
+      - name: 准备交叉工具链
+        uses: ./.gs_packager/.github/actions/setup-aml-toolchain
+        with:
+          archive-url: ${{ inputs.toolchain-url }}
+          archive-sha256: ${{ inputs.toolchain-sha256 }}
+          owner: ${{ inputs.toolchain-owner }}
+          token: ${{ secrets.toolchain-token }}
+
+      - name: 推断项目类型与参数
+        id: meta
+        shell: bash
+        env:
+          REPOSITORY: ${{ inputs.repository }}
+          PROJECT: ${{ inputs.project }}
+        run: |
+          set -euo pipefail
+          name="${PROJECT:-${REPOSITORY##*/}}"
+          case "$name" in
+            AMLgsMenu)
+              # AMLgsMenu 需要显式给出 ImGui 路径并开启 GLES 后端
+              cmake_args="-DIMGUI_ROOT=${GITHUB_WORKSPACE}/src/third_party/imgui -DAML_ENABLE_GLES=ON"
+              ;;
+            *)
+              cmake_args=""
+              ;;
+          esac
+          echo "name=${name}" >> "$GITHUB_OUTPUT"
+          echo "artifact-name=${name}-${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+          echo "cmake-args=${cmake_args}" >> "$GITHUB_OUTPUT"
+          echo "项目: ${name}"
+
+      - name: 配置
+        shell: bash
+        env:
+          CMAKE_ARGS: ${{ steps.meta.outputs.cmake-args }}
+          EXTRA_ARGS: ${{ inputs.extra-cmake-args }}
+          BUILD_TYPE: ${{ inputs.build-type }}
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC2086
+          cmake -S src -B build \
+            -DCMAKE_TOOLCHAIN_FILE="${GITHUB_WORKSPACE}/.gs_packager/toolchain.cmake" \
+            -DAML_TOOLCHAIN_DIR="${AML_TOOLCHAIN_DIR}" \
+            -DCMAKE_BUILD_TYPE="${BUILD_TYPE}" \
+            ${CMAKE_ARGS} ${EXTRA_ARGS}
+
+      - name: 编译
+        shell: bash
+        run: cmake --build build -j"$(nproc)"
+
+      - name: 检查产物
+        shell: bash
+        env:
+          NAME: ${{ steps.meta.outputs.name }}
+        run: |
+          set -euo pipefail
+          bin="build/${NAME}"
+          [ -f "$bin" ] || { echo "::error::找不到产物 ${bin}"; ls -R build | head -50; exit 1; }
+          info="$(file -b "$bin")"
+          echo "$info"
+          case "$info" in
+            *ARM*) ;;
+            *) echo "::error::产物不是 ARM 可执行文件：${info}"; exit 1 ;;
+          esac
+
+      - name: strip（可选）
+        if: inputs.strip
+        shell: bash
+        env:
+          NAME: ${{ steps.meta.outputs.name }}
+        run: |
+          set -euo pipefail
+          "${AML_TOOLCHAIN_DIR}/bin/${TRIPLET}-strip" "build/${NAME}"
+          file -b "build/${NAME}"
+
+      - name: 生成校验和
+        shell: bash
+        env:
+          NAME: ${{ steps.meta.outputs.name }}
+        run: |
+          set -euo pipefail
+          cd build
+          sha256sum "${NAME}" > "${NAME}.sha256"
+          cat "${NAME}.sha256"
+
+      - name: 上传产物
+        if: inputs.upload-artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.meta.outputs.artifact-name }}
+          path: |
+            build/${{ steps.meta.outputs.name }}
+            build/${{ steps.meta.outputs.name }}.sha256
+          if-no-files-found: error
+          retention-days: 30

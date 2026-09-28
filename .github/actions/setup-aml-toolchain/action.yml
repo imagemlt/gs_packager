@@ -1,0 +1,129 @@
+name: Setup AML cross toolchain
+description: 下载并解压 CoreELEC 交叉工具链快照（gs_packager release asset），并导出 AML_TOOLCHAIN_DIR / LD_LIBRARY_PATH / PATH
+
+inputs:
+  archive-url:
+    description: 快照地址；留空则用 <owner>/gs_packager latest release 里的 aml-toolchain-<triplet>.tar.zst
+    required: false
+    default: ''
+  archive-sha256:
+    description: 快照 sha256；留空则从同一 release 的 SHA256SUMS 中读取
+    required: false
+    default: ''
+  token:
+    description: 拉取私有 release asset 用的 token（公开仓库留空）
+    required: false
+    default: ''
+  owner:
+    description: 存放快照的仓库 owner；留空则用当前仓库 owner
+    required: false
+    default: ''
+  triplet:
+    description: 目标三元组
+    required: false
+    default: armv8a-libreelec-linux-gnueabihf
+  toolchain-dir:
+    description: 解压目标目录；留空则用 $RUNNER_TEMP/aml-toolchain
+    required: false
+    default: ''
+
+outputs:
+  toolchain-dir:
+    description: 解压后的工具链根目录
+    value: ${{ steps.unpack.outputs.dir }}
+
+runs:
+  using: composite
+  steps:
+    - name: 解析快照地址与校验和
+      id: resolve
+      shell: bash
+      env:
+        INPUT_URL: ${{ inputs.archive-url }}
+        INPUT_SHA: ${{ inputs.archive-sha256 }}
+        INPUT_TOKEN: ${{ inputs.token }}
+        INPUT_OWNER: ${{ inputs.owner }}
+        TRIPLET: ${{ inputs.triplet }}
+      run: |
+        set -euo pipefail
+        owner="${INPUT_OWNER:-${GITHUB_REPOSITORY_OWNER}}"
+        name="aml-toolchain-${TRIPLET}"
+        release="https://github.com/${owner}/gs_packager/releases"
+        url="${INPUT_URL:-${release}/latest/download/${name}.tar.zst}"
+        sha="${INPUT_SHA}"
+        if [ -z "$sha" ]; then
+          auth=()
+          [ -n "$INPUT_TOKEN" ] && auth=(-H "Authorization: Bearer ${INPUT_TOKEN}")
+          sums="$(curl -fsSL "${auth[@]}" "${release}/latest/download/SHA256SUMS")" || {
+            echo "::error::无法获取 SHA256SUMS。请先在 gs_packager 中运行 snapshot workflow 发布工具链快照。"
+            exit 1
+          }
+          sha="$(printf '%s\n' "$sums" | awk -v f="${name}.tar.zst" '$2 == f || $2 == "*" f { print $1; exit }')"
+          [ -n "$sha" ] || { echo "::error::SHA256SUMS 中找不到 ${name}.tar.zst"; exit 1; }
+        fi
+        {
+          echo "url=${url}"
+          echo "sha=${sha}"
+          echo "name=${name}"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: 缓存快照（按 sha256 命中）
+      id: cache
+      uses: actions/cache@v4
+      with:
+        path: ${{ runner.temp }}/aml-toolchain-download
+        key: aml-toolchain-${{ steps.resolve.outputs.sha }}
+
+    - name: 下载快照
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        URL: ${{ steps.resolve.outputs.url }}
+        TOKEN: ${{ inputs.token }}
+      run: |
+        set -euo pipefail
+        dest="${RUNNER_TEMP}/aml-toolchain-download"
+        rm -rf "$dest"
+        mkdir -p "$dest"
+        auth=()
+        [ -n "$TOKEN" ] && auth=(-H "Authorization: Bearer ${TOKEN}")
+        curl -fL --retry 3 --retry-delay 5 "${auth[@]}" "$URL" -o "$dest/snapshot.tar.zst"
+
+    - name: 校验 sha256
+      shell: bash
+      env:
+        EXPECTED_SHA: ${{ steps.resolve.outputs.sha }}
+      run: |
+        set -euo pipefail
+        file="${RUNNER_TEMP}/aml-toolchain-download/snapshot.tar.zst"
+        echo "${EXPECTED_SHA}  ${file}" | sha256sum -c -
+
+    - name: 解压并导出环境
+      id: unpack
+      shell: bash
+      env:
+        TRIPLET: ${{ inputs.triplet }}
+        TARGET_DIR: ${{ inputs.toolchain-dir }}
+      run: |
+        set -euo pipefail
+        if ! command -v zstd >/dev/null 2>&1; then
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq zstd
+        fi
+        dir="${TARGET_DIR:-${RUNNER_TEMP}/aml-toolchain}"
+        rm -rf "$dir"
+        mkdir -p "$dir"
+        zstd -d -c "${RUNNER_TEMP}/aml-toolchain-download/snapshot.tar.zst" | tar -xf - -C "$dir"
+        if [ ! -d "$dir/$TRIPLET/sysroot" ]; then
+          echo "::error::快照内容不完整：缺少 $TRIPLET/sysroot"
+          exit 1
+        fi
+        {
+          echo "AML_TOOLCHAIN_DIR=$dir"
+          echo "TRIPLET=$TRIPLET"
+          echo "SYSROOT=$dir/$TRIPLET/sysroot"
+          echo "LD_LIBRARY_PATH=$dir/x86_64-linux-gnu/$TRIPLET/lib:${LD_LIBRARY_PATH:-}"
+        } >> "$GITHUB_ENV"
+        echo "$dir/bin" >> "$GITHUB_PATH"
+        echo "dir=$dir" >> "$GITHUB_OUTPUT"
+        echo "工具链就绪: $dir"

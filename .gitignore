@@ -1,0 +1,19 @@
+# 工具链快照与中间产物都不进仓库（体积大，且含 Amlogic 专有二进制）
+snapshots/
+work/
+toolchain/
+*.tar.zst
+*.tar.gz
+*.tar.xz
+*.sha256
+!toolchain.sha256
+
+# Python 缓存
+__pycache__/
+*.pyc
+
+# 本地/编辑器
+.DS_Store
+.idea/
+.vscode/
+*.swp
