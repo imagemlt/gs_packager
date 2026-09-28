@@ -47,12 +47,25 @@ TOOLCHAIN_DIR=/path/to/coreelec/build.CoreELEC-Amlogic-ng.arm-21/toolchain \
 
 ### 2. 发布快照
 
-把 `*.tar.zst` 和 `SHA256SUMS` 作为 release asset 上传（tag 随意，例如 `toolchain-2026.09`）。
-`setup-aml-toolchain` 默认从 **latest release** 拉取，因此发布后所有项目仓库即可直接使用。
+把 `*.tar.zst` 和 `SHA256SUMS` 作为 release asset 上传（tag 任意，例如 `toolchain-2026.09`）。
+`setup-aml-toolchain` 默认从 **latest release** 拉取，发布后所有项目仓库即可直接使用。
 
-> ⚠️ 快照内含 `libGLESv2.so`、`libEGL.so`、`libamcodec.so` 等 Amlogic 专有二进制。
-> 如果本仓库是公开仓库，请不要把快照发到公开 release，改用私有 release / 私有 OCI registry，
-> 并在调用时传 `toolchain-url` + `toolchain-token`。
+三种发布方式：
+
+```bash
+# a) 一条命令（需要 contents:write 的 PAT）
+GH_TOKEN=github_pat_xxx scripts/publish-release.sh --tag toolchain-2026.09
+
+# b) 装了 gh 的话
+gh release create toolchain-2026.09 snapshots/*.tar.zst snapshots/SHA256SUMS snapshots/snapshot-info.txt
+
+# c) 网页：新建 release，把 snapshots/ 里的文件拖进去
+```
+
+> 快照内含 `libEGL.so`、`libGLESv2.so`、`libamcodec.so` 这三个 Amlogic 供应商二进制（共约 68 MB），
+> 其余部分为 gcc/binutils/glibc 与 CoreELEC 开源库。若要把快照放公开 release，属于再分发行为，
+> 由仓库所有者判断；若不想公开发，可改发到私有 release 并传 `toolchain-url` + `toolchain-token`，
+> 或参考上文拆包思路（公开 base + 私有 vendor）。
 
 ### 3. 编译两个项目
 
