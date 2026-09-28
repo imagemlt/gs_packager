@@ -2,8 +2,38 @@
 
 给 Amlogic 地面端项目做 **可复现交叉编译** 的共享基础设施。
 
-解决的问题：`AMLgsMenu` / `AMLDigitalFPV` 都依赖 CoreELEC 的交叉工具链
-（`armv8a-libreelec-linux-gnueabihf-` + 含 GStreamer / libamcodec / GLES 的 sysroot）。
+## 这个仓库是什么（定位）
+
+**是**：`AMLgsMenu` / `AMLDigitalFPV` 的**编译基础设施** —— 交叉工具链快照的生成/校验/发布/消费，
+加上两个项目共用的 CI workflow（`.github/workflows/build-project.yml`）。
+
+**不是**：更新包（固件包）生成器。那是另一条线（在独立的 `upgradePackGen` 项目里，目前只有设计稿，未实现）——两者只是都属于“给地面端做交付”。
+
+仓库名 `gs_packager` 是历史原因，和“打包”无关。如果你希望名字与用途一致，可选做法：把本仓库改名为
+`build-infra`，或把工具链快照拆到单独的 `aml-toolchain` 仓库 —— 搬运成本很低，因为快照地址已经参数化
+（`toolchain-owner` / `toolchain-url` / `toolchain-token` 都是 setup action 的输入项）。当前选择是**不改名**，只在此说明。
+
+### 为什么 release 里放的是工具链快照
+
+因为编译必须用 CoreELEC 那套交叉工具链（含 GStreamer / libamcodec / GLES 的 sysroot），而它是
+**约 900 MB 的二进制集合**，git 托管不了：
+
+| 通道 | 限制 | 结论 |
+| --- | --- | --- |
+| 仓库内的文件 | GitHub 硬限单文件 **100 MB**（超 50 MB 就告警） | 放不进去 |
+| Git LFS | 免费额度 1 GB/月存储 + 1 GB/月流量，而 CI 每次构建都要下 219 MB | 跑几次就烧穿，**所有构建一起挂** |
+| **release asset** | 单文件上限 2 GB | ✅ 唯一可行，且能按 sha256 长期缓存 |
+
+所以 `releases/latest` 下挂的是工具链快照（由 `setup-aml-toolchain` 消费），仓库的 **tag 演的是工具链版本**，
+不是本仓库的代码版本。想避免这种语义错位，可改用 ghcr.io 镜像层托管（需把 setup action 改成拉镜像）。
+
+`releases/latest` 的另一个含义：**每发一个新快照，所有项目仓库就自动用新的**（因为默认从 latest 拉）。
+如果不希望这种“静默升级”，可在项目侧固定 `toolchain-sha256`。
+
+## 解决的问题
+
+那套工具链：`armv8a-libreelec-linux-gnueabihf-`，外加含 GStreamer / libamcodec / GLES 的 sysroot。
+它是在容器里（`/home/docker/CoreELEC/...`）长出来的，**不能直接打包给 CI 用**：
 那套工具链是在容器里（`/home/docker/CoreELEC/...`）长出来的，**不能直接打包给 CI 用**：
 
 | 坑 | 现象 | 本仓库的处理 |
