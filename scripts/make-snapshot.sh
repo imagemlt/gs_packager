@@ -190,12 +190,15 @@ fi
 # ---------------------------------------------------------------- 5. 打包
 
 GCC_VERSION="$("$(pick_gcc)" -dumpfullversion -dumpversion 2>/dev/null || echo unknown)"
-BINUTILS_VERSION="$("$STAGE/bin/${TRIPLET}-ld" --version 2>/dev/null | head -1 || echo unknown)"
+# ld 需要 host 侧 libbfd，跑之前必须补上 LD_LIBRARY_PATH
+BINUTILS_VERSION="$(LD_LIBRARY_PATH="$STAGE/x86_64-linux-gnu/$TRIPLET/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+    "$STAGE/bin/${TRIPLET}-ld" --version 2>/dev/null | head -1 || echo unknown)"
 
 cat > "$OUT_DIR/snapshot-info.txt" <<EOF
 name=${NAME}
 created=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-source_toolchain=${TOOLCHAIN_DIR}
+# 只记目录名，不写构建机上的绝对路径（该文件会随快照一起分发）
+source_toolchain=$(basename "$TOOLCHAIN_DIR")
 target_triplet=${TRIPLET}
 gcc_version=${GCC_VERSION}
 binutils_version=${BINUTILS_VERSION}
