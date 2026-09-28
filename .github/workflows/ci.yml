@@ -52,6 +52,35 @@ jobs:
           [ -f "${RUNNER_TEMP}/out/snapshot-info.txt" ] || { echo "::error::缺少 snapshot-info.txt"; exit 1; }
           echo "fixture 冒烟通过"
 
+      - name: fixture 冒烟（--lean 精简版）
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$1"; exit 1; }
+          tests/make-fixture-toolchain.sh "${RUNNER_TEMP}/fixture-lean"
+          TOOLCHAIN_DIR="${RUNNER_TEMP}/fixture-lean" scripts/make-snapshot.sh \
+            --lean --out "${RUNNER_TEMP}/out-lean" --compress gzip --skip-smoke
+
+          mkdir -p "${RUNNER_TEMP}/unpack-lean"
+          tar -xzf "${RUNNER_TEMP}/out-lean/aml-toolchain-${TRIPLET}.tar.gz" -C "${RUNNER_TEMP}/unpack-lean"
+          SYS="${RUNNER_TEMP}/unpack-lean/${TRIPLET}/sysroot"
+
+          # 应当被精简掉的
+          [ ! -e "${SYS}/usr/share/kodi" ] || fail "kodi 未被精简"
+          [ ! -e "${SYS}/usr/lib/kodi" ] || fail "usr/lib/kodi 未被精简"
+          [ ! -e "${SYS}/usr/bin" ] || fail "usr/bin 未被精简"
+          [ ! -e "${SYS}/usr/lib/libfoo.a" ] || fail "有同名 .so 的 libfoo.a 未被精简"
+          # 绝不能误删的
+          [ -e "${SYS}/usr/lib/libc_nonshared.a" ] || fail "libc_nonshared.a 被误删（这会让所有链接失败）"
+          [ -e "${SYS}/usr/lib/libbar.a" ] || fail "没有同名 .so 的 libbar.a 被误删"
+          [ -e "${SYS}/usr/include/stdio.h" ] || fail "usr/include 被误删"
+          [ -e "${SYS}/usr/share/pkgconfig/gstreamer-1.0.pc" ] || fail "pkgconfig 被误删"
+          [ -e "${SYS}/usr/lib/libc.so.6" ] || fail "libc.so.6 被误删"
+          # 编译器本体与 host 侧库不能被碰
+          [ -e "${RUNNER_TEMP}/unpack-lean/bin/${TRIPLET}-gcc-13.2.0" ] || fail "精简动了 bin/"
+          [ -e "${RUNNER_TEMP}/unpack-lean/x86_64-linux-gnu/${TRIPLET}/lib/libbfd-2.41.so" ] || fail "精简动了 host 侧库"
+          grep -q '^lean=1$' "${RUNNER_TEMP}/out-lean/snapshot-info.txt" || fail "snapshot-info.txt 未标记 lean=1"
+          echo "lean fixture 冒烟通过"
+
       - name: YAML 结构与语法检查
         run: |
           set -euo pipefail

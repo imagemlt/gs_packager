@@ -16,6 +16,7 @@ TOOLCHAIN_DIR="${TOOLCHAIN_DIR:-${COREELEC_TOOLCHAIN:-}}"
 OUT_DIR="${REPO_DIR}/snapshots"
 NAME=""
 MINIMAL=1
+LEAN=0
 COMPRESS="auto"
 JOBS="$(nproc 2>/dev/null || echo 4)"
 EPOCH="${SOURCE_DATE_EPOCH:-1704067200}"
@@ -36,6 +37,9 @@ usage() {
   --out DIR             输出目录（默认 ${OUT_DIR}）
   --name NAME           快照名（默认 aml-toolchain-<triplet>）
   --no-minimal          保守裁剪：只剔目录，不剔 gold/dwp/lto-dump/lto1
+  --lean                精简版：再剔除 sysroot 内编译无关内容（895M → 540M）
+                        详见 scripts/prune-lean.py；发布前必须用 --verify 验收
+  --no-lean             不精简（默认）
   --compress zstd|gzip|auto   默认 auto（有 zstd 用 zstd，否则 gzip）
   --jobs N              压缩线程数（默认 ${JOBS}）
   --epoch SECONDS       确定性打包用的 mtime（默认 ${EPOCH}）
@@ -54,6 +58,8 @@ while [ $# -gt 0 ]; do
         --out) OUT_DIR="$2"; shift 2 ;;
         --name) NAME="$2"; shift 2 ;;
         --no-minimal) MINIMAL=0; shift ;;
+        --lean) LEAN=1; shift ;;
+        --no-lean) LEAN=0; shift ;;
         --compress) COMPRESS="$2"; shift 2 ;;
         --jobs) JOBS="$2"; shift 2 ;;
         --epoch) EPOCH="$2"; shift 2 ;;
@@ -156,6 +162,16 @@ if [ "$REMAINING" != "0" ]; then
     find "$STAGE" -xtype l 2>/dev/null | head -5 | sed 's/^/    /'
 fi
 
+# ---------------------------------------------------------------- 3.5 精简（可选）
+
+if [ "$LEAN" = 1 ]; then
+    log "精简模式：剔除 sysroot 内与编译无关的内容（文档/locale/Kodi/目标端可执行文件/静态库）"
+    TRIPLET="$TRIPLET" python3 "$SELF_DIR/prune-lean.py" "$STAGE"
+    # 精简删错了东西的话，下面的冒烟与 --verify 会暴露；这里只挡住最致命的缺失
+    [ -e "$STAGE/$TRIPLET/sysroot/usr/lib/libc.so.6" ] || die "精简后缺少 libc.so.6"
+    [ -d "$STAGE/$TRIPLET/sysroot/usr/include" ] || die "精简后缺少 sysroot/usr/include"
+fi
+
 # ---------------------------------------------------------------- 4. 冒烟编译
 
 pick_gcc() {
@@ -203,6 +219,7 @@ target_triplet=${TRIPLET}
 gcc_version=${GCC_VERSION}
 binutils_version=${BINUTILS_VERSION}
 minimal=${MINIMAL}
+lean=${LEAN}
 unpacked_bytes=$(du -sb "$STAGE" | cut -f1)
 file_count=$(find "$STAGE" | wc -l | tr -d ' ')
 EOF

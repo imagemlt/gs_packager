@@ -25,6 +25,10 @@ on:
         description: 精简裁剪（去掉 gold/dwp/lto-dump/lto1）
         type: boolean
         default: true
+      lean:
+        description: 进一步瘦身 sysroot（895M→540M，tar.zst 218M→139M）；会先跑产物一致性闸门
+        type: boolean
+        default: true
       verify:
         description: 出包后真编译两个项目做验证
         type: boolean
@@ -60,10 +64,26 @@ jobs:
         env:
           TOOLCHAIN_DIR_INPUT: ${{ inputs.toolchain-dir }}
           MINIMAL: ${{ inputs.minimal }}
+          LEAN: ${{ inputs.lean }}
         run: |
           set -euo pipefail
           args=(--toolchain-dir "${TOOLCHAIN_DIR_INPUT}" --out snapshots)
-          [ "${MINIMAL}" = "true" ] || args+=(--no-minimal)
+          if [ "${MINIMAL}" != "true" ]; then args+=(--no-minimal); fi
+          if [ "${LEAN}" = "true" ]; then args+=(--lean); fi
+          scripts/make-snapshot.sh "${args[@]}"
+
+      # 精简版必须能和全量版产出完全相同的二进制，否则就是删过头了。
+      # 惯例抽样：两份快照都真编译一遍，逐字节比对 sha256（实测两边本来就完全一致）。
+      - name: 生成对照快照（全量 sysroot）
+        if: inputs.lean
+        shell: bash
+        env:
+          TOOLCHAIN_DIR_INPUT: ${{ inputs.toolchain-dir }}
+          MINIMAL: ${{ inputs.minimal }}
+        run: |
+          set -euo pipefail
+          args=(--toolchain-dir "${TOOLCHAIN_DIR_INPUT}" --out snapshots-full)
+          if [ "${MINIMAL}" != "true" ]; then args+=(--no-minimal); fi
           scripts/make-snapshot.sh "${args[@]}"
 
       - name: 取出两个项目源码（用于验证）
@@ -87,10 +107,32 @@ jobs:
       - name: 用快照真编译两个项目
         if: inputs.verify
         shell: bash
+        env:
+          LEAN: ${{ inputs.lean }}
         run: |
           set -euo pipefail
           snapshot="$(ls snapshots/aml-toolchain-*.tar.zst | head -1)"
-          scripts/verify-snapshot.sh --snapshot "${snapshot}" --projects-dir "${PWD}/projects"
+          scripts/verify-snapshot.sh --snapshot "${snapshot}" --projects-dir "${PWD}/projects" \
+            --artifacts-dir "${PWD}/artifacts-lean"
+
+          if [ "${LEAN}" != "true" ]; then
+            echo "非精简版，没有可对比的对象，跳过一致性闸门"
+            exit 0
+          fi
+
+          full_snapshot="$(ls snapshots-full/aml-toolchain-*.tar.zst | head -1)"
+          scripts/verify-snapshot.sh --snapshot "${full_snapshot}" --projects-dir "${PWD}/projects" \
+            --artifacts-dir "${PWD}/artifacts-full"
+
+          echo "##### 产物 sha256 对比（全量 vs 精简）"
+          cat artifacts-full/ALL.sha256
+          cat artifacts-lean/ALL.sha256
+          if diff -u artifacts-full/ALL.sha256 artifacts-lean/ALL.sha256; then
+            echo "一致：精简没有改变编译产物"
+          else
+            echo "::error::精简版与全量版产出的二进制不一致。说明精简删掉了编译需要的东西：请检查 scripts/prune-lean.py 的删除清单，禁止发布这份快照。"
+            exit 1
+          fi
 
       # 这一步是"本地能编、换环境就挂"的体检：快照里的 as/ld 是 host 程序，
       # 会依赖构建机的系统库（libsframe.so.1 / libbfd-2.42-system.so 等）。

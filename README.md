@@ -53,8 +53,9 @@ toolchain.cmake                     通用 CMake 工具链文件
 scripts/make-snapshot.sh            生成可搬迁快照（裁剪 + 修链接 + 打包 + 自检）
 scripts/relativize-symlinks.py      绝对符号链接 → 相对链接
 scripts/verify-snapshot.sh          用快照真编译两个项目，验证快照可用
+scripts/prune-lean.py             精简：剔除 sysroot 内编译无关内容（含静态库保护规则）
 tests/cleanroom-toolchain-test.sh 干净容器验证：这个快照能在哪个 runner 镜像上跑
-tests/                              假工具链 fixture + 链接修复的单元测试
+tests/                              假工具链 fixture + 链接修复/精简规则的单元测试
 .github/actions/setup-aml-toolchain 复合 action：下载/缓存快照并导出环境
 .github/workflows/build-project.yml 可复用 workflow：编译一个项目
 .github/workflows/build.yml         一键编译 AMLgsMenu + AMLDigitalFPV
@@ -74,6 +75,31 @@ TOOLCHAIN_DIR=/path/to/coreelec/build.CoreELEC-Amlogic-ng.arm-21/toolchain \
 
 产物：`snapshots/aml-toolchain-armv8a-libreelec-linux-gnueabihf.tar.zst` + `.sha256` + `SHA256SUMS` + `snapshot-info.txt`。
 脚本自带冒烟编译（用快照里的 gcc 编译一个 ARM 小程序），快照自身不可用时会直接失败，不会推坏包。
+
+### 精简版（`--lean`）
+
+```bash
+scripts/make-snapshot.sh --toolchain-dir /path/to/toolchain --lean --out snapshots
+```
+
+再剔掉 sysroot 内与编译无关的内容：文档/locale/Kodi/目标端可执行文件（`usr/bin`、`usr/sbin`）/Python 运行时/
+字符集转换模块，以及“有同名 `.so` 且未被链接脚本引用”的静态库（规则见 `scripts/prune-lean.py`）。
+
+| 版本 | 解压后 | tar.zst(-19) |
+| --- | --- | --- |
+| 默认 | 895 MB | 218 MB |
+| `--lean` | 530 MB | **136 MB** |
+
+**两个必须知道的边界：**
+
+1. **不支持静态链接**。`libc.a` / `libm.a` 等（有同名 `.so` 的那些）已被剔除，`-static` 会链接失败。
+   项目实际用法是动态链接；需要静态链接请用 `--no-lean`。
+2. **它不是“全局安全”的删除**。这是面向这两个项目的白名单式删减：以后若引入 autotools 依赖、构建期需要
+   运行目标二进制（如某些 codegen）、或依赖 Python 工具链，可能就会踩到。所以发布前必须过下面的闸门。
+
+**发布前闸门（`snapshot.yml` 已内建）**：先分别用全量版与精简版真编译两个项目，
+比对产物 sha256；不一致就拒绝发布（说明删过头了）。只因精简版面向的就是“产物不变”这个目标，
+这条最能直接抓到“少了个库”。实测两者产物逐字节一致。
 
 也可以用 workflow：`Actions → snapshot → Run workflow`（见 `.github/workflows/snapshot.yml`，支持在 CoreELEC 容器里跑）。
 
@@ -135,7 +161,8 @@ CI 侧：`.github/workflows/build.yml` 直接编译 `imagemlt/AMLgsMenu` 与 `im
 | --- | --- | --- | --- |
 | 全量工具链 | 3.6 GB | 671 MB | — |
 | 仅本项目所需（默认） | 1.3 GB | 317 MB | 428 MB |
-| `--minimal`（默认开启，去掉 gold/dwp/lto-dump/静态 libpython） | 895 MB | **223 MB** | — |
+| `--minimal`（默认开启，去掉 gold/dwp/lto-dump/静态 libpython） | 895 MB | 218 MB | — |
+| `--lean`（再去掉 sysroot 内编译无关内容） | 530 MB | **136 MB** | — |
 
 编译耗时（12 核）：AMLgsMenu ≈ 13 s，AMLDigitalFPV ≈ 4.5 s。
 

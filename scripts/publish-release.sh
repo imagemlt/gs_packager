@@ -97,9 +97,15 @@ if [ -z "$TOKEN" ]; then
     die "缺少 token：GH_TOKEN=xxx（或 --token）；需要 contents:write 权限"
 fi
 
-api() { curl -fsSL -H "Authorization: Bearer ${TOKEN}" \
-        -H "Accept: application/vnd.github+json" \
-        -H "X-GitHub-Api-Version: 2022-11-28" "$@"; }
+# token 不能出现在命令行参数里：同一台机器上任何进程都能从 `ps` 看到别人的 argv。
+# 改用 curl 配置文件（0600），用完即删。
+CURL_CFG="$(mktemp "${TMPDIR:-/tmp}/.ghcurl.XXXXXX")"
+chmod 600 "$CURL_CFG"
+( umask 077; printf 'header = "Authorization: Bearer %s"\nheader = "X-GitHub-Api-Version: 2022-11-28"\n' "$TOKEN" > "$CURL_CFG" )
+trap 'rm -f "$CURL_CFG"' EXIT
+
+api() { curl -fsSL --config "$CURL_CFG" \
+        -H "Accept: application/vnd.github+json" "$@"; }
 
 # 1. 取或建 release
 release_json="$(api "${API}/releases/tags/${TAG}" 2>/dev/null || true)"
@@ -135,9 +141,8 @@ for f in "${ASSETS[@]}"; do
     fi
     log "上传 ${name} ($(du -h "$f" | cut -f1))"
     curl -fsS -X POST \
-        -H "Authorization: Bearer ${TOKEN}" \
+        --config "$CURL_CFG" \
         -H "Content-Type: application/octet-stream" \
-        -H "X-GitHub-Api-Version: 2022-11-28" \
         --data-binary "@${f}" \
         "${UPLOADS}/releases/${release_id}/assets?name=${name}" >/dev/null \
         || die "上传 ${name} 失败"

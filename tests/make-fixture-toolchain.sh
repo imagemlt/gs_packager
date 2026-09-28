@@ -37,4 +37,27 @@ done
 ln -s "$FAKE_BUILD_PREFIX/$TRIPLET/sysroot/usr/lib/libm.so.6" "$DEST/$TRIPLET/sysroot/usr/lib/libm.so"
 ln -s "$FAKE_BUILD_PREFIX/$TRIPLET/sysroot/usr/lib/libinput.so.10.13.0" "$DEST/$TRIPLET/sysroot/usr/lib/libinput.so"
 
+# --- 供 --lean 精简测试用的内容 ---------------------------------------------
+mkdir -p \
+    "$DEST/$TRIPLET/sysroot/usr/include" \
+    "$DEST/$TRIPLET/sysroot/usr/share/pkgconfig" \
+    "$DEST/$TRIPLET/sysroot/usr/share/kodi" \
+    "$DEST/$TRIPLET/sysroot/usr/bin" \
+    "$DEST/$TRIPLET/sysroot/usr/lib/kodi"
+# 必须保留的编译所需内容
+: > "$DEST/$TRIPLET/sysroot/usr/include/stdio.h"
+: > "$DEST/$TRIPLET/sysroot/usr/share/pkgconfig/gstreamer-1.0.pc"
+# 应当被精简掉的
+: > "$DEST/$TRIPLET/sysroot/usr/share/kodi/kodi.bin"
+: > "$DEST/$TRIPLET/sysroot/usr/lib/kodi/kodi.bin"
+: > "$DEST/$TRIPLET/sysroot/usr/bin/Xorg"
+# 链接脚本引用的 .a：绝不能删（glibc 就是这么干的）
+printf '/* GNU ld script */\nGROUP ( /usr/lib/libc.so.6 /usr/lib/libc_nonshared.a )\n' \
+    > "$DEST/$TRIPLET/sysroot/usr/lib/libc.so"
+: > "$DEST/$TRIPLET/sysroot/usr/lib/libc_nonshared.a"
+# 有同名 .so → 可删；没有同名 .so → 必须留
+: > "$DEST/$TRIPLET/sysroot/usr/lib/libfoo.a"
+: > "$DEST/$TRIPLET/sysroot/usr/lib/libfoo.so.1"
+: > "$DEST/$TRIPLET/sysroot/usr/lib/libbar.a"
+
 echo "fixture 工具链已生成: $DEST"

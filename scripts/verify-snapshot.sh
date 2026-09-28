@@ -12,6 +12,8 @@ REPO_DIR="$(cd "${SELF_DIR}/.." && pwd)"
 SNAPSHOT=""
 PROJECTS_DIR=""
 PROJECTS="AMLgsMenu AMLDigitalFPV"
+ARTIFACTS_DIR=""
+BUILD_TYPE="${BUILD_TYPE:-Release}"
 WORK_DIR=""
 TRIPLET="${TRIPLET:-armv8a-libreelec-linux-gnueabihf}"
 JOBS="$(nproc 2>/dev/null || echo 4)"
@@ -27,6 +29,8 @@ usage() {
   --snapshot FILE       工具链快照（.tar.zst / .tar.gz）
   --projects-dir DIR    项目源码目录（默认 \${HOME}/projects）
   --projects "..."      要编译的项目名（默认 "AMLgsMenu AMLDigitalFPV"）
+  --artifacts-dir DIR   把产物与 sha256 留档到该目录（用于两次快照的产物对比）
+  --build-type TYPE     CMAKE_BUILD_TYPE（默认 ${BUILD_TYPE}，与 build workflow 一致）
   --work DIR            工作目录（默认 mktemp）
   --triplet NAME        目标三元组（默认 ${TRIPLET}）
   --jobs N              并行度（默认 ${JOBS}）
@@ -40,6 +44,8 @@ while [ $# -gt 0 ]; do
         --snapshot) SNAPSHOT="$2"; shift 2 ;;
         --projects-dir) PROJECTS_DIR="$2"; shift 2 ;;
         --projects) PROJECTS="$2"; shift 2 ;;
+        --artifacts-dir) ARTIFACTS_DIR="$2"; shift 2 ;;
+        --build-type) BUILD_TYPE="$2"; shift 2 ;;
         --work) WORK_DIR="$2"; shift 2 ;;
         --triplet) TRIPLET="$2"; shift 2 ;;
         --jobs) JOBS="$2"; shift 2 ;;
@@ -79,6 +85,10 @@ REAL_GXX="${REAL_GXX:-$TOOLCHAIN_DIR/bin/${TRIPLET}-g++}"
 log "编译器: $REAL_GCC"
 
 FAILED=0
+if [ -n "$ARTIFACTS_DIR" ]; then
+    rm -rf "$ARTIFACTS_DIR"
+    mkdir -p "$ARTIFACTS_DIR"
+fi
 
 for project in $PROJECTS; do
     SRC="$PROJECTS_DIR/$project"
@@ -104,6 +114,7 @@ for project in $PROJECTS; do
     cmake -S "$SRC" -B "$BUILD_DIR" \
         -DCMAKE_TOOLCHAIN_FILE="$REPO_DIR/toolchain.cmake" \
         -DAML_TOOLCHAIN_DIR="$TOOLCHAIN_DIR" \
+        -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
         "${EXTRA_ARGS[@]}" > "$WORK_DIR/$project-configure.log" 2>&1 || {
             tail -20 "$WORK_DIR/$project-configure.log" >&2
             die "$project 配置失败（完整日志: $WORK_DIR/$project-configure.log）"
@@ -123,7 +134,19 @@ for project in $PROJECTS; do
         *) die "$project 产物不是 ARM 可执行文件: $FILE_INFO" ;;
     esac
     log "OK  $project → $BIN ($(du -h "$BIN" | cut -f1))  $FILE_INFO"
+
+    # 留档：两次快照（如精简版 vs 全量版）的产物 sha256 应当完全相同
+    if [ -n "$ARTIFACTS_DIR" ]; then
+        cp "$BIN" "$ARTIFACTS_DIR/$project"
+        ( cd "$ARTIFACTS_DIR" && sha256sum "$project" > "$project.sha256" )
+    fi
 done
 
 [ "$FAILED" = 0 ] || die "有项目未能验证"
+
+if [ -n "$ARTIFACTS_DIR" ]; then
+    ( cd "$ARTIFACTS_DIR" && cat ./*.sha256 | sort > ALL.sha256 )
+    log "产物 sha256 已留档: $ARTIFACTS_DIR/ALL.sha256"
+fi
+
 log "全部通过：快照可用"
